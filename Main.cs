@@ -11,7 +11,7 @@ public class RapidFireFix : BasePlugin
 {
 	public override string ModuleName => "Rapid Fire Fix";
 
-	public override string ModuleVersion => "1.3.0";
+	public override string ModuleVersion => "1.3.1";
 
 	public override string ModuleAuthor => "jon";
 
@@ -22,7 +22,7 @@ public class RapidFireFix : BasePlugin
 	private const float VoteStartDelaySeconds = 10.0f;
 
 	// How long the vote stays open for players to cast a vote.
-	private const float VoteDurationSeconds = 30.0f;
+	private const float VoteDurationSeconds = 60.0f;
 
 	// A vote passes when the number of YES votes is at least this percentage of
 	// the human players who were connected when the vote opened. 50 = half the
