@@ -1,0 +1,56 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore RapidFireFix.csproj
+
+      - name: Build (Release)
+        run: dotnet build RapidFireFix.csproj -c Release --no-restore
+
+      # Makes the compiled plugin downloadable from the workflow run (every push & PR).
+      - name: Upload DLL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RapidFireFix-${{ github.run_number }}
+          path: bin/Release/net8.0/RapidFireFix.dll
+          if-no-files-found: error
+
+      # On merge to main, (re)publish the DLL to a rolling "latest" release so it
+      # always has a stable download URL:
+      #   https://github.com/${{ github.repository }}/releases/latest/download/RapidFireFix.dll
+      - name: Publish DLL to 'latest' release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: "Automated build of RapidFireFix. Install to addons/counterstrikesharp/plugins/RapidFireFix/RapidFireFix.dll"
+        run: |
+          gh release create latest \
+            --title "Latest build" \
+            --notes "$NOTES" \
+            --target "$GITHUB_SHA" 2>/dev/null \
+          || gh release edit latest \
+            --target "$GITHUB_SHA" \
+            --notes "$NOTES"
+          gh release upload latest "bin/Release/net8.0/RapidFireFix.dll" --clobber
