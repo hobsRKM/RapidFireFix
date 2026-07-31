@@ -7,11 +7,12 @@ The plugin requires no configuration and starts working as soon as it's loaded.
 
 ## Double Tap vote
 
-At the start of every map a vote is opened asking players whether double tap
-(rapid fire) should be enabled for that map:
+On the first round of every map a vote is opened asking players whether double
+tap (rapid fire) should be enabled for that map (using round start rather than
+map start, so players are actually spawned in when it runs):
 
 - Players vote with `!yes` or `!no` in chat.
-- The vote opens `10s` after the map starts (so players have time to connect)
+- The vote opens `10s` after the first round starts (so players have time to spawn)
   and stays open for `30s`. The "vote is open" message is repeated a few times
   when it opens so nobody misses it.
 - The vote **passes** when the number of **YES** votes is at least **50% of the
