@@ -10,7 +10,7 @@ public class RapidFireFix : BasePlugin
 {
 	public override string ModuleName => "Rapid Fire Fix";
 
-	public override string ModuleVersion => "1.2.0";
+	public override string ModuleVersion => "1.2.1";
 
 	public override string ModuleAuthor => "jon";
 
@@ -108,25 +108,22 @@ public class RapidFireFix : BasePlugin
 		if (_voteInProgress)
 			return;
 
-		// Don't hold a vote that can't reach the minimum turnout: if there aren't
-		// enough human players connected, skip it and keep the fix on.
+		// Not enough players to reach the minimum turnout. Instead of staying
+		// silent, tell players why there's no vote (repeated so it's visible) and
+		// keep the fix on.
 		if (CountHumanPlayers() < MinimumVotes)
+		{
+			SpamMessage(voteId, false,
+				$"{Tag} Need at least {ChatColors.Yellow}{MinimumVotes}{ChatColors.Default} players to hold a Double Tap vote — not enough online, so DT stays disabled.");
 			return;
+		}
 
 		_voteInProgress = true;
 		_votes.Clear();
 
-		// Spam the "vote is open" line a few times so nobody misses it: once
-		// immediately, then repeated at a fixed interval.
-		PrintVoteOpen();
-		for (int i = 1; i < VoteAnnounceRepeats; i++)
-		{
-			AddTimer(i * VoteAnnounceIntervalSeconds, () =>
-			{
-				if (voteId == _currentVoteId && _voteInProgress)
-					PrintVoteOpen();
-			});
-		}
+		// Spam the "vote is open" line a few times so nobody misses it.
+		SpamMessage(voteId, true,
+			$"{Tag} Vote to {ChatColors.Lime}ENABLE Double Tap{ChatColors.Default} (rapid fire): type {ChatColors.Yellow}!yes{ChatColors.Default} or {ChatColors.Yellow}!no{ChatColors.Default} ({ChatColors.Yellow}{(int)VoteDurationSeconds}s{ChatColors.Default}, need {ChatColors.Yellow}{MinimumVotes}+{ChatColors.Default} votes).");
 
 		// A single reminder halfway through the vote window.
 		AddTimer(VoteDurationSeconds / 2.0f, () =>
@@ -143,9 +140,27 @@ public class RapidFireFix : BasePlugin
 		});
 	}
 
-	private void PrintVoteOpen()
+	// Prints a chat line immediately and then repeats it a few times (spaced by
+	// VoteAnnounceIntervalSeconds) so players don't miss it. When requireVoteOpen
+	// is true the repeats stop if the vote is no longer running; either way they
+	// stop once a new map/vote cycle begins.
+	private void SpamMessage(int voteId, bool requireVoteOpen, string message)
 	{
-		Server.PrintToChatAll($"{Tag} Vote to {ChatColors.Lime}ENABLE Double Tap{ChatColors.Default} (rapid fire): type {ChatColors.Yellow}!yes{ChatColors.Default} or {ChatColors.Yellow}!no{ChatColors.Default} ({ChatColors.Yellow}{(int)VoteDurationSeconds}s{ChatColors.Default}, need {ChatColors.Yellow}{MinimumVotes}+{ChatColors.Default} votes).");
+		Server.PrintToChatAll(message);
+
+		for (int i = 1; i < VoteAnnounceRepeats; i++)
+		{
+			AddTimer(i * VoteAnnounceIntervalSeconds, () =>
+			{
+				if (voteId != _currentVoteId)
+					return;
+
+				if (requireVoteOpen && !_voteInProgress)
+					return;
+
+				Server.PrintToChatAll(message);
+			});
+		}
 	}
 
 	private void EndVote()

@@ -17,7 +17,8 @@ At the start of every map a vote is opened asking players whether double tap
 - At least **4 votes** must be cast for the vote to count, and a simple majority
   of them must be **YES** for it to pass — so out of 4 votes you need **3 YES**
   (a 2-2 tie fails). This stops a single player from enabling double tap alone.
-  A vote is only started if at least 4 human players are connected.
+  If fewer than 4 human players are connected, no vote is held and a message
+  saying at least 4 players are needed is shown instead (DT stays disabled).
 - If it passes, the rapid-fire fix is skipped for the rest of that map, so double
   tap is allowed.
 - Otherwise (too few votes, majority NO, or a tie) the vote **fails** and the fix
