@@ -12,14 +12,20 @@ At the start of every map a vote is opened asking players whether double tap
 
 - Players vote with `!yes` or `!no` in chat.
 - The vote opens `10s` after the map starts (so players have time to connect)
-  and stays open for `30s`.
-- If a simple majority of the cast votes are **YES**, the vote **passes**: the
-  rapid-fire fix is skipped for the rest of that map, so double tap is allowed.
-- Otherwise (majority NO, a tie, or no votes) the vote **fails** and the fix
+  and stays open for `30s`. The "vote is open" message is repeated a few times
+  when it opens so nobody misses it.
+- At least **4 votes** must be cast for the vote to count, and a simple majority
+  of them must be **YES** for it to pass — so out of 4 votes you need **3 YES**
+  (a 2-2 tie fails). This stops a single player from enabling double tap alone.
+  A vote is only started if at least 4 human players are connected.
+- If it passes, the rapid-fire fix is skipped for the rest of that map, so double
+  tap is allowed.
+- Otherwise (too few votes, majority NO, or a tie) the vote **fails** and the fix
   keeps running as normal — `vote failed, DT is disabled`.
 
 The result applies until the next map starts, when a fresh vote is held.
 
-The vote window, start delay and pass percentage are defined as constants at the
-top of `Main.cs` (`VoteStartDelaySeconds`, `VoteDurationSeconds`,
-`VotePassPercentage`).
+Behaviour is controlled by constants at the top of `Main.cs`:
+`VoteStartDelaySeconds`, `VoteDurationSeconds`, `VotePassPercentage` (majority
+threshold), `MinimumVotes` (turnout required), and `VoteAnnounceRepeats` /
+`VoteAnnounceIntervalSeconds` (how often the open message repeats).

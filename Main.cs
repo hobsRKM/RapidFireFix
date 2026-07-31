@@ -10,7 +10,7 @@ public class RapidFireFix : BasePlugin
 {
 	public override string ModuleName => "Rapid Fire Fix";
 
-	public override string ModuleVersion => "1.1.0";
+	public override string ModuleVersion => "1.2.0";
 
 	public override string ModuleAuthor => "jon";
 
@@ -24,9 +24,20 @@ public class RapidFireFix : BasePlugin
 	private const float VoteDurationSeconds = 30.0f;
 
 	// Percentage of the *cast* votes that must be YES for the vote to pass.
-	// 50 = simple majority (strictly more YES than NO). A tie or no votes at all
-	// fails the vote, which leaves the rapid-fire fix enabled (the safe default).
+	// 50 = simple majority (strictly more YES than NO). So out of 4 votes you
+	// need 3 YES; a 2-2 tie fails and the rapid-fire fix stays on.
 	private const int VotePassPercentage = 50;
+
+	// Minimum number of votes that must be cast for the vote to count. Anything
+	// below this always fails, so a single player can't enable double tap on
+	// their own. It's also the minimum number of human players that must be
+	// connected before a vote is started at all.
+	private const int MinimumVotes = 4;
+
+	// When the vote opens, the "vote is open" line is repeated this many times
+	// (spaced by the interval below) so players don't miss it.
+	private const int VoteAnnounceRepeats = 5;
+	private const float VoteAnnounceIntervalSeconds = 1.0f;
 
 	// ---- Vote state ----
 
@@ -46,6 +57,10 @@ public class RapidFireFix : BasePlugin
 	// map are ignored if a new map (and therefore a new cycle) has started.
 	private int _currentVoteId;
 
+	// The map we last started a vote cycle for. OnMapStart can fire several times
+	// during a single level load, so we only react when the map actually changes.
+	private string? _currentMap;
+
 	private static readonly string Tag = $" {ChatColors.Green}[DT Vote]{ChatColors.Default}";
 
 	public override void Load(bool hotReload)
@@ -55,10 +70,23 @@ public class RapidFireFix : BasePlugin
 		// On a hot reload OnMapStart won't fire but players are already on the
 		// server, so kick off a vote cycle straight away.
 		if (hotReload)
+		{
+			_currentMap = Server.MapName;
 			BeginMapVoteCycle();
+		}
 	}
 
-	private void OnMapStartListener(string mapName) => BeginMapVoteCycle();
+	private void OnMapStartListener(string mapName)
+	{
+		// OnMapStart can fire more than once during a single level load; only
+		// react the first time we see a given map so the vote (and its repeated
+		// announcement) runs exactly one cycle per map.
+		if (mapName == _currentMap)
+			return;
+
+		_currentMap = mapName;
+		BeginMapVoteCycle();
+	}
 
 	private void BeginMapVoteCycle()
 	{
@@ -77,11 +105,28 @@ public class RapidFireFix : BasePlugin
 
 	private void StartVote(int voteId)
 	{
+		if (_voteInProgress)
+			return;
+
+		// Don't hold a vote that can't reach the minimum turnout: if there aren't
+		// enough human players connected, skip it and keep the fix on.
+		if (CountHumanPlayers() < MinimumVotes)
+			return;
+
 		_voteInProgress = true;
 		_votes.Clear();
 
-		Server.PrintToChatAll($"{Tag} Vote to {ChatColors.Lime}ENABLE Double Tap{ChatColors.Default} (rapid fire) for this map.");
-		Server.PrintToChatAll($"{Tag} Type {ChatColors.Yellow}!yes{ChatColors.Default} or {ChatColors.Yellow}!no{ChatColors.Default} — you have {ChatColors.Yellow}{(int)VoteDurationSeconds}{ChatColors.Default} seconds.");
+		// Spam the "vote is open" line a few times so nobody misses it: once
+		// immediately, then repeated at a fixed interval.
+		PrintVoteOpen();
+		for (int i = 1; i < VoteAnnounceRepeats; i++)
+		{
+			AddTimer(i * VoteAnnounceIntervalSeconds, () =>
+			{
+				if (voteId == _currentVoteId && _voteInProgress)
+					PrintVoteOpen();
+			});
+		}
 
 		// A single reminder halfway through the vote window.
 		AddTimer(VoteDurationSeconds / 2.0f, () =>
@@ -98,6 +143,11 @@ public class RapidFireFix : BasePlugin
 		});
 	}
 
+	private void PrintVoteOpen()
+	{
+		Server.PrintToChatAll($"{Tag} Vote to {ChatColors.Lime}ENABLE Double Tap{ChatColors.Default} (rapid fire): type {ChatColors.Yellow}!yes{ChatColors.Default} or {ChatColors.Yellow}!no{ChatColors.Default} ({ChatColors.Yellow}{(int)VoteDurationSeconds}s{ChatColors.Default}, need {ChatColors.Yellow}{MinimumVotes}+{ChatColors.Default} votes).");
+	}
+
 	private void EndVote()
 	{
 		if (!_voteInProgress)
@@ -109,9 +159,12 @@ public class RapidFireFix : BasePlugin
 		int no = _votes.Values.Count(v => !v);
 		int total = yes + no;
 
-		// Simple majority of the cast votes using integer math (no rounding).
-		// With no votes cast this stays false, so the fix remains enabled.
-		bool passed = total > 0 && yes * 100 > total * VotePassPercentage;
+		// The vote must reach the minimum turnout AND have a simple majority of
+		// YES (integer math, no rounding). Too few votes, a tie, or majority NO
+		// all leave the fix on.
+		bool enoughVotes = total >= MinimumVotes;
+		bool majorityYes = yes * 100 > total * VotePassPercentage;
+		bool passed = enoughVotes && majorityYes;
 
 		_doubleTapEnabled = passed;
 
@@ -119,10 +172,19 @@ public class RapidFireFix : BasePlugin
 		{
 			Server.PrintToChatAll($"{Tag} {ChatColors.Lime}Vote PASSED{ChatColors.Default} (YES {yes} / NO {no}). Double Tap {ChatColors.Lime}ENABLED{ChatColors.Default} — rapid fire fix is OFF this map.");
 		}
+		else if (!enoughVotes)
+		{
+			Server.PrintToChatAll($"{Tag} {ChatColors.Red}Vote FAILED{ChatColors.Default} — only {total} vote(s), need {MinimumVotes}+. DT is disabled.");
+		}
 		else
 		{
 			Server.PrintToChatAll($"{Tag} {ChatColors.Red}Vote FAILED{ChatColors.Default} (YES {yes} / NO {no}). DT is disabled.");
 		}
+	}
+
+	private static int CountHumanPlayers()
+	{
+		return Utilities.GetPlayers().Count(p => p is { IsValid: true, IsBot: false, IsHLTV: false });
 	}
 
 	[ConsoleCommand("css_yes", "Vote YES to enable Double Tap (rapid fire) for this map")]
