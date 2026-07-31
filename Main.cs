@@ -3,6 +3,7 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
+using Microsoft.Extensions.Logging;
 
 namespace RapidFireFix;
 
@@ -10,7 +11,7 @@ public class RapidFireFix : BasePlugin
 {
 	public override string ModuleName => "Rapid Fire Fix";
 
-	public override string ModuleVersion => "1.2.1";
+	public override string ModuleVersion => "1.3.1";
 
 	public override string ModuleAuthor => "jon";
 
@@ -21,21 +22,22 @@ public class RapidFireFix : BasePlugin
 	private const float VoteStartDelaySeconds = 10.0f;
 
 	// How long the vote stays open for players to cast a vote.
-	private const float VoteDurationSeconds = 30.0f;
+	private const float VoteDurationSeconds = 60.0f;
 
-	// Percentage of the *cast* votes that must be YES for the vote to pass.
-	// 50 = simple majority (strictly more YES than NO). So out of 4 votes you
-	// need 3 YES; a 2-2 tie fails and the rapid-fire fix stays on.
-	private const int VotePassPercentage = 50;
+	// A vote passes when the number of YES votes is at least this percentage of
+	// the human players who were connected when the vote opened. 50 = half the
+	// server must vote YES (so 6 players -> 3 YES, 4 players -> 2 YES). Players
+	// who don't vote effectively count as NO, so at least this share of the whole
+	// server has to actively want double tap.
+	private const int RequiredYesPercentage = 50;
 
-	// Minimum number of votes that must be cast for the vote to count. Anything
-	// below this always fails, so a single player can't enable double tap on
-	// their own. It's also the minimum number of human players that must be
-	// connected before a vote is started at all.
-	private const int MinimumVotes = 4;
+	// Minimum human players that must be connected to hold a vote at all. Below
+	// this no vote is held (a message says so) and the fix stays on, so a lone
+	// player can't enable double tap.
+	private const int MinimumPlayers = 2;
 
-	// When the vote opens, the "vote is open" line is repeated this many times
-	// (spaced by the interval below) so players don't miss it.
+	// When a message is announced it is repeated this many times (spaced by the
+	// interval below) so players don't miss it.
 	private const int VoteAnnounceRepeats = 5;
 	private const float VoteAnnounceIntervalSeconds = 1.0f;
 
@@ -53,6 +55,10 @@ public class RapidFireFix : BasePlugin
 	// choice overwrites any previous one.
 	private readonly Dictionary<ulong, bool> _votes = new();
 
+	// Number of human players connected when the current vote opened. The YES
+	// threshold is calculated from this so it doesn't drift as players join/leave.
+	private int _votePlayers;
+
 	// Bumped on every map/vote cycle so that timers scheduled for a previous
 	// map are ignored if a new map (and therefore a new cycle) has started.
 	private int _currentVoteId;
@@ -67,13 +73,13 @@ public class RapidFireFix : BasePlugin
 	{
 		RegisterListener<Listeners.OnMapStart>(OnMapStartListener);
 
-		// On a hot reload OnMapStart won't fire but players are already on the
-		// server, so kick off a vote cycle straight away.
-		if (hotReload)
-		{
-			_currentMap = Server.MapName;
-			BeginMapVoteCycle();
-		}
+		Logger.LogInformation("RapidFireFix loaded (hotReload={HotReload}). A Double Tap vote runs ~{Delay}s after each map start. Use css_dtvote to start one now.", hotReload, (int)VoteStartDelaySeconds);
+
+		// Start a cycle right away as well. OnMapStart only fires on the *next*
+		// map change, so without this a plugin loaded on an already-running map
+		// would do nothing until the map changed.
+		_currentMap = Server.MapName;
+		BeginMapVoteCycle();
 	}
 
 	private void OnMapStartListener(string mapName)
@@ -84,6 +90,7 @@ public class RapidFireFix : BasePlugin
 		if (mapName == _currentMap)
 			return;
 
+		Logger.LogInformation("Map started: {Map}. Scheduling Double Tap vote.", mapName);
 		_currentMap = mapName;
 		BeginMapVoteCycle();
 	}
@@ -103,27 +110,35 @@ public class RapidFireFix : BasePlugin
 		});
 	}
 
-	private void StartVote(int voteId)
+	private void StartVote(int voteId, bool force = false)
 	{
 		if (_voteInProgress)
 			return;
 
-		// Not enough players to reach the minimum turnout. Instead of staying
-		// silent, tell players why there's no vote (repeated so it's visible) and
-		// keep the fix on.
-		if (CountHumanPlayers() < MinimumVotes)
+		int players = CountHumanPlayers();
+
+		// Not enough players to hold a vote. Instead of staying silent, tell
+		// players why there's no vote (repeated so it's visible) and keep the fix
+		// on. A forced (test) vote skips this check.
+		if (!force && players < MinimumPlayers)
 		{
+			Logger.LogInformation("Double Tap vote skipped: only {Players}/{Min} players connected.", players, MinimumPlayers);
 			SpamMessage(voteId, false,
-				$"{Tag} Need at least {ChatColors.Yellow}{MinimumVotes}{ChatColors.Default} players to hold a Double Tap vote — not enough online, so DT stays disabled.");
+				$"{Tag} Need at least {ChatColors.Yellow}{MinimumPlayers}{ChatColors.Default} players to hold a Double Tap vote — only {ChatColors.Yellow}{players}{ChatColors.Default} online, so DT stays disabled.");
 			return;
 		}
 
 		_voteInProgress = true;
 		_votes.Clear();
+		_votePlayers = players;
+
+		int required = RequiredYesVotes(players);
+
+		Logger.LogInformation("Double Tap vote opened (players={Players}, needYes={Required}, force={Force}).", players, required, force);
 
 		// Spam the "vote is open" line a few times so nobody misses it.
 		SpamMessage(voteId, true,
-			$"{Tag} Vote to {ChatColors.Lime}ENABLE Double Tap{ChatColors.Default} (rapid fire): type {ChatColors.Yellow}!yes{ChatColors.Default} or {ChatColors.Yellow}!no{ChatColors.Default} ({ChatColors.Yellow}{(int)VoteDurationSeconds}s{ChatColors.Default}, need {ChatColors.Yellow}{MinimumVotes}+{ChatColors.Default} votes).");
+			$"{Tag} Vote to {ChatColors.Lime}ENABLE Double Tap{ChatColors.Default} (rapid fire): type {ChatColors.Yellow}!yes{ChatColors.Default} or {ChatColors.Yellow}!no{ChatColors.Default} ({ChatColors.Yellow}{(int)VoteDurationSeconds}s{ChatColors.Default}). Need {ChatColors.Yellow}{required}{ChatColors.Default} YES ({RequiredYesPercentage}% of {players}).");
 
 		// A single reminder halfway through the vote window.
 		AddTimer(VoteDurationSeconds / 2.0f, () =>
@@ -172,34 +187,75 @@ public class RapidFireFix : BasePlugin
 
 		int yes = _votes.Values.Count(v => v);
 		int no = _votes.Values.Count(v => !v);
-		int total = yes + no;
+		int required = RequiredYesVotes(_votePlayers);
 
-		// The vote must reach the minimum turnout AND have a simple majority of
-		// YES (integer math, no rounding). Too few votes, a tie, or majority NO
-		// all leave the fix on.
-		bool enoughVotes = total >= MinimumVotes;
-		bool majorityYes = yes * 100 > total * VotePassPercentage;
-		bool passed = enoughVotes && majorityYes;
+		// Pass when YES reaches the required share of the players who were online
+		// when the vote opened. Non-voters count as NO.
+		bool passed = yes >= required;
 
 		_doubleTapEnabled = passed;
 
+		Logger.LogInformation("Double Tap vote ended: YES={Yes} NO={No} required={Required} players={Players} passed={Passed}.", yes, no, required, _votePlayers, passed);
+
 		if (passed)
 		{
-			Server.PrintToChatAll($"{Tag} {ChatColors.Lime}Vote PASSED{ChatColors.Default} (YES {yes} / NO {no}). Double Tap {ChatColors.Lime}ENABLED{ChatColors.Default} — rapid fire fix is OFF this map.");
-		}
-		else if (!enoughVotes)
-		{
-			Server.PrintToChatAll($"{Tag} {ChatColors.Red}Vote FAILED{ChatColors.Default} — only {total} vote(s), need {MinimumVotes}+. DT is disabled.");
+			Server.PrintToChatAll($"{Tag} {ChatColors.Lime}Vote PASSED{ChatColors.Default} (YES {yes} / NO {no}, needed {required} of {_votePlayers}). Double Tap {ChatColors.Lime}ENABLED{ChatColors.Default} — rapid fire fix is OFF this map.");
 		}
 		else
 		{
-			Server.PrintToChatAll($"{Tag} {ChatColors.Red}Vote FAILED{ChatColors.Default} (YES {yes} / NO {no}). DT is disabled.");
+			Server.PrintToChatAll($"{Tag} {ChatColors.Red}Vote FAILED{ChatColors.Default} (YES {yes} / NO {no}, needed {required} of {_votePlayers}). DT is disabled.");
 		}
+	}
+
+	// Number of YES votes needed to pass: RequiredYesPercentage% of the players
+	// (rounded up), but always at least 1.
+	private static int RequiredYesVotes(int players)
+	{
+		return Math.Max(1, (int)Math.Ceiling(players * RequiredYesPercentage / 100.0));
 	}
 
 	private static int CountHumanPlayers()
 	{
-		return Utilities.GetPlayers().Count(p => p is { IsValid: true, IsBot: false, IsHLTV: false });
+		List<CCSPlayerController> players;
+		try
+		{
+			players = Utilities.GetPlayers();
+		}
+		catch
+		{
+			return 0;
+		}
+
+		int count = 0;
+		foreach (CCSPlayerController p in players)
+		{
+			try
+			{
+				if (p is { IsValid: true, IsBot: false, IsHLTV: false })
+					count++;
+			}
+			catch
+			{
+				// Player left / is in a transient state — just skip them.
+			}
+		}
+
+		return count;
+	}
+
+	[ConsoleCommand("css_dtvote", "Force-start a Double Tap vote now (for testing)")]
+	public void OnForceVoteCommand(CCSPlayerController? player, CommandInfo info)
+	{
+		Logger.LogInformation("css_dtvote used — force-starting a Double Tap vote.");
+		info.ReplyToCommand($"{Tag} Force-starting a Double Tap vote...");
+
+		_currentMap = Server.MapName;
+		_doubleTapEnabled = false;
+		_voteInProgress = false;
+		_votes.Clear();
+
+		int voteId = ++_currentVoteId;
+		StartVote(voteId, force: true);
 	}
 
 	[ConsoleCommand("css_yes", "Vote YES to enable Double Tap (rapid fire) for this map")]
