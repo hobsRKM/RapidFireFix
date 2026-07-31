@@ -3,6 +3,7 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
+using Microsoft.Extensions.Logging;
 
 namespace RapidFireFix;
 
@@ -10,7 +11,7 @@ public class RapidFireFix : BasePlugin
 {
 	public override string ModuleName => "Rapid Fire Fix";
 
-	public override string ModuleVersion => "1.2.1";
+	public override string ModuleVersion => "1.2.2";
 
 	public override string ModuleAuthor => "jon";
 
@@ -34,8 +35,8 @@ public class RapidFireFix : BasePlugin
 	// connected before a vote is started at all.
 	private const int MinimumVotes = 4;
 
-	// When the vote opens, the "vote is open" line is repeated this many times
-	// (spaced by the interval below) so players don't miss it.
+	// When a message is announced it is repeated this many times (spaced by the
+	// interval below) so players don't miss it.
 	private const int VoteAnnounceRepeats = 5;
 	private const float VoteAnnounceIntervalSeconds = 1.0f;
 
@@ -67,13 +68,13 @@ public class RapidFireFix : BasePlugin
 	{
 		RegisterListener<Listeners.OnMapStart>(OnMapStartListener);
 
-		// On a hot reload OnMapStart won't fire but players are already on the
-		// server, so kick off a vote cycle straight away.
-		if (hotReload)
-		{
-			_currentMap = Server.MapName;
-			BeginMapVoteCycle();
-		}
+		Logger.LogInformation("RapidFireFix loaded (hotReload={HotReload}). A Double Tap vote runs ~{Delay}s after each map start. Use css_dtvote to start one now.", hotReload, (int)VoteStartDelaySeconds);
+
+		// Start a cycle right away as well. OnMapStart only fires on the *next*
+		// map change, so without this a plugin loaded on an already-running map
+		// would do nothing until the map changed.
+		_currentMap = Server.MapName;
+		BeginMapVoteCycle();
 	}
 
 	private void OnMapStartListener(string mapName)
@@ -84,6 +85,7 @@ public class RapidFireFix : BasePlugin
 		if (mapName == _currentMap)
 			return;
 
+		Logger.LogInformation("Map started: {Map}. Scheduling Double Tap vote.", mapName);
 		_currentMap = mapName;
 		BeginMapVoteCycle();
 	}
@@ -103,23 +105,28 @@ public class RapidFireFix : BasePlugin
 		});
 	}
 
-	private void StartVote(int voteId)
+	private void StartVote(int voteId, bool force = false)
 	{
 		if (_voteInProgress)
 			return;
 
+		int players = CountHumanPlayers();
+
 		// Not enough players to reach the minimum turnout. Instead of staying
 		// silent, tell players why there's no vote (repeated so it's visible) and
-		// keep the fix on.
-		if (CountHumanPlayers() < MinimumVotes)
+		// keep the fix on. A forced (test) vote skips this check.
+		if (!force && players < MinimumVotes)
 		{
+			Logger.LogInformation("Double Tap vote skipped: only {Players}/{Min} players connected.", players, MinimumVotes);
 			SpamMessage(voteId, false,
-				$"{Tag} Need at least {ChatColors.Yellow}{MinimumVotes}{ChatColors.Default} players to hold a Double Tap vote — not enough online, so DT stays disabled.");
+				$"{Tag} Need at least {ChatColors.Yellow}{MinimumVotes}{ChatColors.Default} players to hold a Double Tap vote — only {ChatColors.Yellow}{players}{ChatColors.Default} online, so DT stays disabled.");
 			return;
 		}
 
 		_voteInProgress = true;
 		_votes.Clear();
+
+		Logger.LogInformation("Double Tap vote opened (players={Players}, force={Force}).", players, force);
 
 		// Spam the "vote is open" line a few times so nobody misses it.
 		SpamMessage(voteId, true,
@@ -183,6 +190,8 @@ public class RapidFireFix : BasePlugin
 
 		_doubleTapEnabled = passed;
 
+		Logger.LogInformation("Double Tap vote ended: YES={Yes} NO={No} total={Total} passed={Passed}.", yes, no, total, passed);
+
 		if (passed)
 		{
 			Server.PrintToChatAll($"{Tag} {ChatColors.Lime}Vote PASSED{ChatColors.Default} (YES {yes} / NO {no}). Double Tap {ChatColors.Lime}ENABLED{ChatColors.Default} — rapid fire fix is OFF this map.");
@@ -199,7 +208,46 @@ public class RapidFireFix : BasePlugin
 
 	private static int CountHumanPlayers()
 	{
-		return Utilities.GetPlayers().Count(p => p is { IsValid: true, IsBot: false, IsHLTV: false });
+		List<CCSPlayerController> players;
+		try
+		{
+			players = Utilities.GetPlayers();
+		}
+		catch
+		{
+			return 0;
+		}
+
+		int count = 0;
+		foreach (CCSPlayerController p in players)
+		{
+			try
+			{
+				if (p is { IsValid: true, IsBot: false, IsHLTV: false })
+					count++;
+			}
+			catch
+			{
+				// Player left / is in a transient state — just skip them.
+			}
+		}
+
+		return count;
+	}
+
+	[ConsoleCommand("css_dtvote", "Force-start a Double Tap vote now (for testing)")]
+	public void OnForceVoteCommand(CCSPlayerController? player, CommandInfo info)
+	{
+		Logger.LogInformation("css_dtvote used — force-starting a Double Tap vote.");
+		info.ReplyToCommand($"{Tag} Force-starting a Double Tap vote...");
+
+		_currentMap = Server.MapName;
+		_doubleTapEnabled = false;
+		_voteInProgress = false;
+		_votes.Clear();
+
+		int voteId = ++_currentVoteId;
+		StartVote(voteId, force: true);
 	}
 
 	[ConsoleCommand("css_yes", "Vote YES to enable Double Tap (rapid fire) for this map")]
