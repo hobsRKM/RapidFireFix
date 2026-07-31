@@ -81,13 +81,13 @@ public class RapidFireFix : BasePlugin
 		_votes.Clear();
 
 		Server.PrintToChatAll($"{Tag} Vote to {ChatColors.Lime}ENABLE Double Tap{ChatColors.Default} (rapid fire) for this map.");
-		Server.PrintToChatAll($"{Tag} Type {ChatColors.Yellow}!dt yes{ChatColors.Default} or {ChatColors.Yellow}!dt no{ChatColors.Default} — you have {ChatColors.Yellow}{(int)VoteDurationSeconds}{ChatColors.Default} seconds.");
+		Server.PrintToChatAll($"{Tag} Type {ChatColors.Yellow}!yes{ChatColors.Default} or {ChatColors.Yellow}!no{ChatColors.Default} — you have {ChatColors.Yellow}{(int)VoteDurationSeconds}{ChatColors.Default} seconds.");
 
 		// A single reminder halfway through the vote window.
 		AddTimer(VoteDurationSeconds / 2.0f, () =>
 		{
 			if (voteId == _currentVoteId && _voteInProgress)
-				Server.PrintToChatAll($"{Tag} Double Tap vote still open — {ChatColors.Yellow}!dt yes{ChatColors.Default} / {ChatColors.Yellow}!dt no{ChatColors.Default}.");
+				Server.PrintToChatAll($"{Tag} Double Tap vote still open — {ChatColors.Yellow}!yes{ChatColors.Default} / {ChatColors.Yellow}!no{ChatColors.Default}.");
 		});
 
 		// Close the vote once the window elapses.
@@ -125,36 +125,23 @@ public class RapidFireFix : BasePlugin
 		}
 	}
 
-	[ConsoleCommand("css_dt", "Vote to enable Double Tap (rapid fire) for this map")]
-	[CommandHelper(minArgs: 1, usage: "<yes|no>", whoCanExecute: CommandUsage.CLIENT_ONLY)]
-	public void OnDoubleTapVoteCommand(CCSPlayerController? player, CommandInfo info)
+	[ConsoleCommand("css_yes", "Vote YES to enable Double Tap (rapid fire) for this map")]
+	[CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+	public void OnVoteYesCommand(CCSPlayerController? player, CommandInfo info) => CastVote(player, info, true);
+
+	[ConsoleCommand("css_no", "Vote NO to keep Double Tap (rapid fire) disabled for this map")]
+	[CommandHelper(whoCanExecute: CommandUsage.CLIENT_ONLY)]
+	public void OnVoteNoCommand(CCSPlayerController? player, CommandInfo info) => CastVote(player, info, false);
+
+	private void CastVote(CCSPlayerController? player, CommandInfo info, bool voteYes)
 	{
 		if (player == null || !player.IsValid)
 			return;
 
+		// Stay silent when no Double Tap vote is running so that other plugins
+		// which also use !yes / !no aren't disrupted.
 		if (!_voteInProgress)
-		{
-			info.ReplyToCommand($"{Tag} There is no Double Tap vote in progress right now.");
 			return;
-		}
-
-		bool voteYes;
-		switch (info.GetArg(1).ToLowerInvariant())
-		{
-			case "yes":
-			case "y":
-			case "1":
-				voteYes = true;
-				break;
-			case "no":
-			case "n":
-			case "2":
-				voteYes = false;
-				break;
-			default:
-				info.ReplyToCommand($"{Tag} Usage: {ChatColors.Yellow}!dt <yes|no>{ChatColors.Default}");
-				return;
-		}
 
 		_votes[player.SteamID] = voteYes;
 

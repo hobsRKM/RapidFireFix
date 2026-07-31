@@ -10,7 +10,7 @@ The plugin requires no configuration and starts working as soon as it's loaded.
 At the start of every map a vote is opened asking players whether double tap
 (rapid fire) should be enabled for that map:
 
-- Players vote with `!dt yes` or `!dt no` in chat (`y`/`n` and `1`/`2` also work).
+- Players vote with `!yes` or `!no` in chat.
 - The vote opens `10s` after the map starts (so players have time to connect)
   and stays open for `30s`.
 - If a simple majority of the cast votes are **YES**, the vote **passes**: the
