@@ -11,14 +11,14 @@ public class RapidFireFix : BasePlugin
 {
 	public override string ModuleName => "Rapid Fire Fix";
 
-	public override string ModuleVersion => "1.4.0";
+	public override string ModuleVersion => "1.5.0";
 
 	public override string ModuleAuthor => "jon";
 
 	// ---- Vote configuration ----
 
-	// How long after a map starts before the vote opens. This gives players
-	// time to (re)connect and spawn after the map change before they are asked.
+	// How long after the first round of a map before the vote opens. This gives
+	// players a moment to spawn in before they are asked.
 	private const float VoteStartDelaySeconds = 10.0f;
 
 	// How long the vote stays open for players to cast a vote. The vote can also
@@ -64,9 +64,11 @@ public class RapidFireFix : BasePlugin
 	// map are ignored if a new map (and therefore a new cycle) has started.
 	private int _currentVoteId;
 
-	// The map we last started a vote cycle for. OnMapStart can fire several times
-	// during a single level load, so we only react when the map actually changes.
+	// The map we last armed a vote for, and whether that vote has been held yet.
+	// The vote is triggered on the first round of each map, which is reliable
+	// (players are spawned) unlike OnMapStart.
 	private string? _currentMap;
+	private bool _voteHeldThisMap;
 
 	// Set once we've logged "fix skipped" after a passed vote, so that line is
 	// printed a single time per enable instead of on every bullet impact.
@@ -76,28 +78,37 @@ public class RapidFireFix : BasePlugin
 
 	public override void Load(bool hotReload)
 	{
-		RegisterListener<Listeners.OnMapStart>(OnMapStartListener);
+		Logger.LogInformation("RapidFireFix loaded (hotReload={HotReload}). A Double Tap vote runs ~{Delay}s after the first round of each map. Use css_dtvote to start one now, css_dtstatus to check state.", hotReload, (int)VoteStartDelaySeconds);
 
-		Logger.LogInformation("RapidFireFix loaded (hotReload={HotReload}). A Double Tap vote runs ~{Delay}s after each map start. Use css_dtvote to start one now, css_dtstatus to check state.", hotReload, (int)VoteStartDelaySeconds);
-
-		// Start a cycle right away as well. OnMapStart only fires on the *next*
-		// map change, so without this a plugin loaded on an already-running map
-		// would do nothing until the map changed.
+		// Handle the map we're already on right away. OnRoundStart drives votes on
+		// later maps, but on load (or hot reload) the next round could be a while
+		// off, so kick off a cycle for the current map now.
 		_currentMap = Server.MapName;
+		_voteHeldThisMap = true;
 		BeginMapVoteCycle();
 	}
 
-	private void OnMapStartListener(string mapName)
+	[GameEventHandler]
+	public HookResult OnRoundStart(EventRoundStart evt, GameEventInfo info)
 	{
-		// OnMapStart can fire more than once during a single level load; only
-		// react the first time we see a given map so the vote (and its repeated
-		// announcement) runs exactly one cycle per map.
-		if (mapName == _currentMap)
-			return;
+		string map = Server.MapName;
 
-		Logger.LogInformation("Map started: {Map}. Scheduling Double Tap vote.", mapName);
-		_currentMap = mapName;
-		BeginMapVoteCycle();
+		// New map -> arm a fresh vote for it.
+		if (map != _currentMap)
+		{
+			_currentMap = map;
+			_voteHeldThisMap = false;
+		}
+
+		// Hold the vote on the first round of the map only.
+		if (!_voteHeldThisMap)
+		{
+			_voteHeldThisMap = true;
+			Logger.LogInformation("First round on {Map} — scheduling Double Tap vote.", map);
+			BeginMapVoteCycle();
+		}
+
+		return HookResult.Continue;
 	}
 
 	private void BeginMapVoteCycle()
@@ -257,6 +268,7 @@ public class RapidFireFix : BasePlugin
 		info.ReplyToCommand($"{Tag} Force-starting a Double Tap vote...");
 
 		_currentMap = Server.MapName;
+		_voteHeldThisMap = true;
 		_doubleTapEnabled = false;
 		_loggedEnabledSkip = false;
 		_voteInProgress = false;
