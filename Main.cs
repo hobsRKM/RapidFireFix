@@ -11,7 +11,7 @@ public class RapidFireFix : BasePlugin
 {
 	public override string ModuleName => "Rapid Fire Fix";
 
-	public override string ModuleVersion => "1.3.1";
+	public override string ModuleVersion => "1.4.0";
 
 	public override string ModuleAuthor => "jon";
 
@@ -21,7 +21,8 @@ public class RapidFireFix : BasePlugin
 	// time to (re)connect and spawn after the map change before they are asked.
 	private const float VoteStartDelaySeconds = 10.0f;
 
-	// How long the vote stays open for players to cast a vote.
+	// How long the vote stays open for players to cast a vote. The vote can also
+	// finish earlier, as soon as enough YES votes are in to pass.
 	private const float VoteDurationSeconds = 60.0f;
 
 	// A vote passes when the number of YES votes is at least this percentage of
@@ -67,13 +68,17 @@ public class RapidFireFix : BasePlugin
 	// during a single level load, so we only react when the map actually changes.
 	private string? _currentMap;
 
+	// Set once we've logged "fix skipped" after a passed vote, so that line is
+	// printed a single time per enable instead of on every bullet impact.
+	private bool _loggedEnabledSkip;
+
 	private static readonly string Tag = $" {ChatColors.Green}[DT Vote]{ChatColors.Default}";
 
 	public override void Load(bool hotReload)
 	{
 		RegisterListener<Listeners.OnMapStart>(OnMapStartListener);
 
-		Logger.LogInformation("RapidFireFix loaded (hotReload={HotReload}). A Double Tap vote runs ~{Delay}s after each map start. Use css_dtvote to start one now.", hotReload, (int)VoteStartDelaySeconds);
+		Logger.LogInformation("RapidFireFix loaded (hotReload={HotReload}). A Double Tap vote runs ~{Delay}s after each map start. Use css_dtvote to start one now, css_dtstatus to check state.", hotReload, (int)VoteStartDelaySeconds);
 
 		// Start a cycle right away as well. OnMapStart only fires on the *next*
 		// map change, so without this a plugin loaded on an already-running map
@@ -100,6 +105,7 @@ public class RapidFireFix : BasePlugin
 		// Safe default until the vote resolves: the fix is ON (double tap disabled).
 		_doubleTapEnabled = false;
 		_voteInProgress = false;
+		_loggedEnabledSkip = false;
 		_votes.Clear();
 
 		int voteId = ++_currentVoteId;
@@ -147,7 +153,7 @@ public class RapidFireFix : BasePlugin
 				Server.PrintToChatAll($"{Tag} Double Tap vote still open — {ChatColors.Yellow}!yes{ChatColors.Default} / {ChatColors.Yellow}!no{ChatColors.Default}.");
 		});
 
-		// Close the vote once the window elapses.
+		// Close the vote once the window elapses (if it hasn't finished early).
 		AddTimer(VoteDurationSeconds, () =>
 		{
 			if (voteId == _currentVoteId)
@@ -194,6 +200,7 @@ public class RapidFireFix : BasePlugin
 		bool passed = yes >= required;
 
 		_doubleTapEnabled = passed;
+		_loggedEnabledSkip = false;
 
 		Logger.LogInformation("Double Tap vote ended: YES={Yes} NO={No} required={Required} players={Players} passed={Passed}.", yes, no, required, _votePlayers, passed);
 
@@ -251,11 +258,23 @@ public class RapidFireFix : BasePlugin
 
 		_currentMap = Server.MapName;
 		_doubleTapEnabled = false;
+		_loggedEnabledSkip = false;
 		_voteInProgress = false;
 		_votes.Clear();
 
 		int voteId = ++_currentVoteId;
 		StartVote(voteId, force: true);
+	}
+
+	[ConsoleCommand("css_dtstatus", "Show whether Double Tap is currently enabled")]
+	public void OnStatusCommand(CCSPlayerController? player, CommandInfo info)
+	{
+		string state = _doubleTapEnabled
+			? $"{ChatColors.Lime}ENABLED{ChatColors.Default} — rapid-fire fix is OFF this map"
+			: $"{ChatColors.Red}DISABLED{ChatColors.Default} — rapid-fire fix is ON";
+
+		info.ReplyToCommand($"{Tag} Double Tap is {state}. Vote in progress: {(_voteInProgress ? "yes" : "no")}.");
+		Logger.LogInformation("css_dtstatus: doubleTapEnabled={Enabled}, voteInProgress={InProgress}.", _doubleTapEnabled, _voteInProgress);
 	}
 
 	[ConsoleCommand("css_yes", "Vote YES to enable Double Tap (rapid fire) for this map")]
@@ -280,6 +299,11 @@ public class RapidFireFix : BasePlugin
 
 		string choice = voteYes ? $"{ChatColors.Lime}YES{ChatColors.Default}" : $"{ChatColors.Red}NO{ChatColors.Default}";
 		info.ReplyToCommand($"{Tag} Your vote ({choice}) has been recorded.");
+
+		// Finish the vote as soon as enough YES votes are in — no need to wait out
+		// the rest of the timer.
+		if (voteYes && _votes.Values.Count(v => v) >= RequiredYesVotes(_votePlayers))
+			EndVote();
 	}
 
 	[GameEventHandler]
@@ -288,7 +312,15 @@ public class RapidFireFix : BasePlugin
 		// Vote passed -> double tap is allowed this map, so skip the rapid-fire
 		// fix entirely and let the weapon fire at whatever rate the client asks.
 		if (_doubleTapEnabled)
+		{
+			if (!_loggedEnabledSkip)
+			{
+				_loggedEnabledSkip = true;
+				Logger.LogInformation("Double Tap ENABLED — skipping the rapid-fire fix, so rapid fire is allowed this map.");
+			}
+
 			return HookResult.Continue;
+		}
 
 		if (evt.Userid?.Pawn?.Value?.WeaponServices?.ActiveWeapon?.Value == null)
 			return HookResult.Continue;
